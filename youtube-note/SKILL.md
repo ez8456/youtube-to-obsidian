@@ -1,152 +1,156 @@
 ---
 name: youtube-note
 description: >
-  將 YouTube 影片轉換為結構化的 Obsidian 筆記。自動抓取影片 metadata 與字幕，
-  產出大綱摘要並存入 Obsidian vault。
-  當使用者的訊息中出現任何 YouTube 或 youtu.be 連結時，一律觸發本 skill——即使使用者
-  只是貼了連結沒有多說什麼，也應該主動詢問是否要做筆記。
-  也適用於以下情境：提到「記錄影片」「影片筆記」「YouTube 筆記」「幫我看這個影片」
-  「這影片在講什麼」「整理一下這部影片」「筆記這支影片」或任何暗示想從 YouTube 影片
-  擷取資訊的對話。即使使用者沒有明確說「筆記」，只要意圖是從影片中提取或整理內容，
-  就應該使用本 skill。
+  Convert a YouTube video into a structured Obsidian note. Automatically fetches
+  video metadata and subtitles, generates a summarized outline, and saves it to
+  the Obsidian vault.
+  Trigger this skill whenever the user's message contains any YouTube or youtu.be
+  link — even if the user just pastes a link without further context, proactively
+  ask whether they'd like to create a note.
+  Also applies to: "record this video", "video note", "YouTube note",
+  "help me watch this video", "what's this video about", "summarize this video",
+  "take notes on this video", or any intent to extract or organize information
+  from a YouTube video. Even without the explicit word "note", if the intent is
+  to extract or summarize video content, use this skill.
 ---
 
 # YouTube Note Skill
 
-將 YouTube 影片的字幕 / transcript 轉化為結構化 Obsidian Markdown 筆記。
+Transform YouTube subtitles / transcripts into structured Obsidian Markdown notes.
 
-## 前置依賴
+## Prerequisites
 
-本 skill 搭配 `obsidian-markdown` skill 使用（來自 kepano/obsidian-skills）。
-撰寫筆記時，遵循 obsidian-markdown skill 中定義的語法規範（Properties、Wikilinks、
-Callouts、Tags 等）。這能確保產出的筆記與使用者 vault 中其他筆記風格一致，
-也讓 Obsidian 的 graph view 和搜尋功能正常運作。
+This skill works alongside the `obsidian-markdown` skill (from kepano/obsidian-skills).
+When writing notes, follow the syntax conventions defined in the obsidian-markdown
+skill (Properties, Wikilinks, Callouts, Tags, etc.). This ensures generated notes
+are consistent with other notes in the user's vault and that Obsidian's graph view
+and search work correctly.
 
-## 工作流程總覽
+## Workflow Overview
 
-1. 接收 YouTube URL
-2. 使用 `yt-dlp` 抓取影片 metadata
-3. 抓取字幕（三層備案：原生字幕 → Whisper 語音辨識 → 影片描述）
-4. 分析字幕內容，產出結構化大綱
-5. 依照模板格式化為 Obsidian Markdown
-6. 以影片標題為檔名，存入 `10 - Sources/Videos/`
+1. Receive a YouTube URL
+2. Fetch video metadata with `yt-dlp`
+3. Fetch subtitles (three-tier fallback: native subtitles → Whisper speech recognition → video description)
+4. Analyze subtitle content and produce a structured outline
+5. Format as Obsidian Markdown using the template
+6. Save to `10 - Sources/Videos/` using the video title as filename
 
-## Step 1：抓取影片資料
+## Step 1: Fetch Video Data
 
 ```bash
 yt-dlp --dump-json --no-download "URL" > /tmp/yt_meta.json
 ```
 
-如果 `yt-dlp` 未安裝，先執行 `pip install yt-dlp --break-system-packages`。
-如果指令失敗（網路問題、影片不存在、地區限制等），告知使用者具體錯誤原因並停止流程。
+If `yt-dlp` is not installed, run `pip install yt-dlp --break-system-packages` first.
+If the command fails (network issues, video not found, region restrictions, etc.), inform the user of the specific error and stop the workflow.
 
-從 JSON 中擷取：
+Extract from JSON:
 
-| 欄位 | 用途 |
-|------|------|
-| `title` | 影片標題（筆記標題 & 檔名） |
-| `channel` | 頻道名稱（frontmatter & tag） |
-| `upload_date` | 發布日期，格式 YYYYMMDD → 轉為 YYYY-MM-DD |
-| `duration_string` | 影片長度 |
-| `description` | 影片描述（輔助分類，也是層級 3 備案素材） |
-| `webpage_url` | 原始連結 |
+| Field | Purpose |
+|-------|---------|
+| `title` | Video title (note title & filename) |
+| `channel` | Channel name (frontmatter & tag) |
+| `upload_date` | Publish date, format YYYYMMDD → convert to YYYY-MM-DD |
+| `duration_string` | Video duration |
+| `description` | Video description (aids categorization, also tier 3 fallback material) |
+| `webpage_url` | Original link |
 
-## Step 2：抓取字幕
+## Step 2: Fetch Subtitles
 
-依照以下三層備案機制，依序嘗試，成功即停。
+Try the following three tiers in order; stop as soon as one succeeds.
 
-### 層級 1：YouTube 原生字幕（最快、最準確）
+### Tier 1: YouTube Native Subtitles (fastest, most accurate)
 
-先嘗試手動字幕，再嘗試自動生成字幕：
+Try manual subtitles first, then auto-generated:
 
 ```bash
-# 優先：手動字幕
-yt-dlp --write-sub --sub-lang zh-Hant,zh-Hans,zh,en --skip-download -o "/tmp/yt_sub" "URL"
+# Preferred: manual subtitles
+yt-dlp --write-sub --sub-lang en --skip-download -o "/tmp/yt_sub" "URL"
 
-# 備用：自動生成字幕
-yt-dlp --write-auto-sub --sub-lang zh-Hant,zh-Hans,zh,en --skip-download -o "/tmp/yt_sub" "URL"
+# Fallback: auto-generated subtitles
+yt-dlp --write-auto-sub --sub-lang en --skip-download -o "/tmp/yt_sub" "URL"
 ```
 
-取得 .vtt 檔後，清理為純文字：
+After obtaining the .vtt file, clean it to plain text:
 
 ```bash
 sed '/^WEBVTT/d; /^$/d; /^[0-9][0-9]:[0-9][0-9]/d; /-->/d; s/<[^>]*>//g' /tmp/yt_sub.*.vtt | awk '!seen[$0]++' > /tmp/yt_transcript.txt
 ```
 
-如果清理後的文字不到 50 字，視為失敗，進入下一層級。
+If the cleaned text is fewer than 50 characters, treat it as a failure and proceed to the next tier.
 
-### 層級 2：Whisper 語音辨識
+### Tier 2: Whisper Speech Recognition
 
-當 YouTube 完全沒有字幕時，使用 Whisper 從音訊辨識文字。
-Whisper 是選裝工具——未安裝時直接跳到層級 3。
+When YouTube has no subtitles at all, use Whisper to transcribe from audio.
+Whisper is optional — if not installed, skip directly to tier 3.
 
 ```bash
-# 安裝（如果尚未安裝）
+# Install (if not already installed)
 pip install openai-whisper --break-system-packages
 
-# 下載音訊
+# Download audio
 yt-dlp -x --audio-format mp3 --audio-quality 5 -o "/tmp/yt_audio.%(ext)s" "URL"
 
-# 轉文字（base 模型速度與品質的平衡點）
-whisper /tmp/yt_audio.mp3 --model base --language zh --output_format txt --output_dir /tmp/
+# Transcribe (base model balances speed and quality)
+whisper /tmp/yt_audio.mp3 --model base --output_format txt --output_dir /tmp/
 
-# 清理暫存
+# Clean up temp files
 rm -f /tmp/yt_audio.mp3
 ```
 
-語言參數：中文影片用 `--language zh`，英文影片用 `--language en`，不確定就省略讓 Whisper 自動偵測。
+Language parameter: omit `--language` to let Whisper auto-detect, or specify `--language en` / `--language zh` if known.
 
-成功後在筆記中標註字幕來源為 `whisper`。
+Mark the subtitle source as `whisper` in the note.
 
-### 層級 3：影片描述（最後備案）
+### Tier 3: Video Description (last resort)
 
-以影片描述作為替代素材，在筆記中標註字幕來源為 `description`。
-大綱品質會較低，在筆記中加入提示：
+Use the video description as substitute material. Mark the subtitle source as `description` in the note.
+Outline quality will be lower; add a callout to the note:
 
-> [!warning] 字幕不可用
-> 本筆記基於影片描述生成，內容可能不完整，建議觀看影片後手動補充。
+> [!warning] Subtitles unavailable
+> This note was generated from the video description. Content may be incomplete — consider watching the video and adding notes manually.
 
-## Step 3：產出大綱
+## Step 3: Generate Outline
 
-### 摘要（Summary）
+### Summary
 
-2-3 句話總結影片核心觀點。重點放在「這支影片在講什麼」和「主要結論或行動建議」。
+2-3 sentences summarizing the video's core message. Focus on "what this video is about" and "key conclusions or action items."
 
-### 大綱（Outline）
+### Outline
 
-- 分為 3-8 個主要段落，依影片內容的複雜度調整
-- 每個段落：一句描述性標題 + 2-3 個重點
-- 保留影片中的關鍵術語、數據、人名
-- 如果影片有明確的時間段落，標註大約時間戳
+- Split into 3-8 major sections, adjusted based on the video's complexity
+- Each section: one descriptive heading + 2-3 key points
+- Preserve key terms, data, and names from the video
+- If the video has clear time segments, annotate approximate timestamps
 
-### 語言規則
+### Language Rules
 
-- 大綱一律使用中文撰寫，即使原始字幕是英文
-- 保留專有名詞的原文（如技術術語、人名、產品名）
+- **Default output language: English.** To change the output language, edit this section (e.g., replace "English" with your preferred language).
+- Preserve proper nouns in their original form (technical terms, names, product names)
 
-### Tags 自動分類
+### Tag Categorization
 
-根據影片內容產生 1-4 個 tags。Tags 的用途是讓使用者在 Obsidian 中快速篩選和發現相關筆記，所以選擇能反映影片核心主題的分類。
+Generate 1-4 tags based on video content. Tags help users quickly filter and discover related notes in Obsidian, so choose categories that reflect the video's core topics.
 
-**格式**：一律小寫英文 kebab-case（如 `side-project`、`mental-model`）
+**Format**: always lowercase English kebab-case (e.g., `side-project`, `mental-model`)
 
-**優先從以下分類中選擇**（對應 `20 - Cards/` 的子資料夾）：
-- `career` — 職涯、求職、職場技能
-- `connection` — 人際關係、溝通、社交
-- `finance` — 投資、理財、經濟
-- `frameworks` — 思維模型、方法論、系統
-- `health` — 健康、運動、心理
-- `life` — 生活、習慣、個人成長
-- `product` — 產品設計、用戶體驗、PM
-- `tech` — 程式、AI、工具、軟體開發
+**Prefer from these categories** (corresponding to `20 - Cards/` subfolders):
+- `career` — career, job hunting, workplace skills
+- `connection` — relationships, communication, social skills
+- `finance` — investing, personal finance, economics
+- `frameworks` — mental models, methodologies, systems
+- `health` — health, fitness, psychology
+- `life` — lifestyle, habits, personal growth
+- `product` — product design, user experience, PM
+- `tech` — programming, AI, tools, software development
 
-**額外 tags**：可加入更細的子分類（如 `ai`、`llm`、`investing`），並以頻道名稱的 kebab-case 作為 tag（如 `fireship`、`ali-abdaal`）。`youtube` 作為基礎 tag 已在模板中預設。
+**Additional tags**: you may add more specific sub-categories (e.g., `ai`, `llm`, `investing`), and use the channel name in kebab-case as a tag (e.g., `fireship`, `ali-abdaal`). `youtube` is included as a base tag in the template by default.
 
-## Step 4：筆記模板
+## Step 4: Note Template
 
-以下模板中的每個 frontmatter 欄位都有其作用——`title` 和 `aliases` 讓搜尋更方便，`tags` 驅動 Obsidian 的篩選功能，`type` 讓 Dataview 查詢能精準抓取 YouTube 筆記。請完整填入所有欄位。
+Every frontmatter field in this template serves a purpose — `title` and `aliases` improve searchability, `tags` power Obsidian's filtering, and `type` enables Dataview queries to target YouTube notes. Fill in all fields completely.
 
-語法遵循 obsidian-markdown skill 規範：標準 YAML frontmatter、`> [!type]` callouts、`[[wikilink]]` 連結，不使用任何 HTML 標籤。
+Syntax follows the obsidian-markdown skill conventions: standard YAML frontmatter, `> [!type]` callouts, `[[wikilink]]` links, no HTML tags.
 
 ```markdown
 ---
@@ -168,11 +172,11 @@ aliases:
 ---
 # {{title}}
 
-## 摘要
+## Summary
 
 {{summary}}
 
-## 大綱
+## Outline
 
 ### {{section_1_title}}
 - {{point_1}}
@@ -182,32 +186,32 @@ aliases:
 - {{point_1}}
 - {{point_2}}
 
-（依此類推）
+(and so on)
 
 ```
 
-## Step 5：檔名與儲存
+## Step 5: Filename & Storage
 
-- **檔名** = 影片標題，移除特殊字元：`/ \ : * ? " < > |`
-- 空格保留（Obsidian 原生支援含空格的檔名）
-- 副檔名 `.md`
-- **儲存路徑**：`10 - Sources/Videos/`
+- **Filename** = video title, with special characters removed: `/ \ : * ? " < > |`
+- Spaces are preserved (Obsidian natively supports filenames with spaces)
+- Extension: `.md`
+- **Save path**: `10 - Sources/Videos/`
 
-完成後輸出確認訊息：`已儲存：《影片標題》→ 檔案路徑`
+On completion, output a confirmation message: `Saved: "Video Title" → file path`
 
-## Vault 結構參考
+## Vault Structure Reference
 
 ```
-Cabinet/
+your-vault/
   ├── 10 - Sources/
-  │   └── Videos/         ← YouTube 筆記存放於此
-  ├── 20 - Cards/          ← 大綱中的概念可用 wikilink 連結到此
+  │   └── Videos/         ← YouTube notes go here
+  ├── 20 - Cards/         ← Concepts in outlines can be wikilinked here
   └── ...
 ```
 
-## 邊界情況處理
+## Edge Cases
 
-- **超長字幕**（超過 50,000 字）：只取前 80% 內容處理，並在筆記中以 callout 標註
-- **直播 / Premiere**：照常處理，但若無字幕可用機率較高，做好進入層級 2 或 3 的準備
-- **播放清單連結**：只處理單一影片，如果 URL 含有 `list=` 參數，擷取 `v=` 的部分單獨處理
-- **Shorts**：照常處理，但通常很短，大綱可能只需 1-2 個段落
+- **Very long subtitles** (over 50,000 characters): process only the first 80% and add a callout noting the truncation
+- **Livestreams / Premieres**: process as normal, but subtitles are less likely to be available — be prepared to fall back to tier 2 or 3
+- **Playlist links**: process only the single video; if the URL contains a `list=` parameter, extract the `v=` portion and process it alone
+- **Shorts**: process as normal, but they're typically very short — the outline may only need 1-2 sections
